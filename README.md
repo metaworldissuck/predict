@@ -5,6 +5,8 @@ Bitcoin Price and USDC Market Value Correlation Analysis
 ```shell
 pip streamlit, pandas, numpy, plotly, yfinance, requests
 It's recommended to use a venv environment.
+or
+pip install -r requirements.txt
 ```
 
 # run
