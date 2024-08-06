@@ -5,127 +5,280 @@ import plotly.graph_objects as go
 import yfinance as yf
 import requests
 from datetime import datetime, timedelta
+from plotly.subplots import make_subplots
 
-# 设置页面标题
-st.set_page_config(page_title="BTC-USDC 相关性分析", layout="wide")
-st.title("比特币价格与USDC市值相关性分析（最近一年）")
+# Set page title
+st.set_page_config(page_title="BTC Correlation Analysis", layout="wide")
+st.title("Bitcoin Price Correlation Analysis (Last Year)")
 
-# 函数：获取比特币价格数据
-@st.cache_data(ttl=3600)  # 设置缓存过期时间为1小时
+# Function: Get Bitcoin price data
+@st.cache_data(ttl=3600)
 def get_btc_data():
     btc = yf.Ticker("BTC-USD")
     btc_data = btc.history(period="1y")
-    btc_data.index = btc_data.index.tz_localize(None)  # 移除时区信息
-    return btc_data['Close']
+    btc_data.index = btc_data.index.tz_localize(None)
+    btc_data['MA30'] = btc_data['Close'].rolling(window=30).mean()
+    btc_data['MA90'] = btc_data['Close'].rolling(window=90).mean()
+    btc_data['RSI'] = calculate_rsi(btc_data['Close'])
+    return btc_data[['Close', 'MA30', 'MA90', 'RSI']]
 
-# 函数：获取USDC市值数据
-@st.cache_data(ttl=3600)  # 设置缓存过期时间为1小时
+# Function: Calculate RSI
+def calculate_rsi(data, window=14):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+# Function: Get USDC market cap data
+@st.cache_data(ttl=3600)
 def get_usdc_data():
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=365)  # 1年的数据
+    start_date = end_date - timedelta(days=365)
     url = f"https://api.coingecko.com/api/v3/coins/usd-coin/market_chart/range?vs_currency=usd&from={int(start_date.timestamp())}&to={int(end_date.timestamp())}"
-
     try:
         response = requests.get(url)
-        response.raise_for_status()  # 如果请求不成功，这将引发一个异常
+        response.raise_for_status()
         data = response.json()
-
         if 'market_caps' not in data:
-            st.error(f"API 响应中没有 'market_caps' 键。响应内容: {data}")
+            st.error(f"No 'market_caps' key in API response. Response content: {data}")
             return pd.Series(dtype=float)
-
         df = pd.DataFrame(data['market_caps'], columns=['Date', 'Market Cap'])
         df['Date'] = pd.to_datetime(df['Date'], unit='ms')
         df.set_index('Date', inplace=True)
         return df['Market Cap']
-
     except requests.RequestException as e:
-        st.error(f"获取 USDC 数据时发生错误: {e}")
+        st.error(f"Error occurred while fetching USDC data: {e}")
         return pd.Series(dtype=float)
 
-# 获取数据
-btc_price = get_btc_data()
+# Function: Get Fear & Greed Index data
+@st.cache_data(ttl=3600)
+def get_fear_greed_index():
+    url = "https://api.alternative.me/fng/?limit=365&format=json"
+    response = requests.get(url)
+    data = response.json()['data']
+    df = pd.DataFrame(data, columns=['value', 'value_classification', 'timestamp'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+    df.set_index('timestamp', inplace=True)
+    df['value'] = df['value'].astype(float)
+    return df['value']
+
+# Function: Get NASDAQ-100 Index data
+@st.cache_data(ttl=3600)
+def get_nasdaq_data():
+    nasdaq = yf.Ticker("^NDX")
+    nasdaq_data = nasdaq.history(period="1y")
+    nasdaq_data.index = nasdaq_data.index.tz_localize(None)
+    return nasdaq_data['Close']
+
+# Function: Get Gold price data
+@st.cache_data(ttl=3600)
+def get_gold_data():
+    gold = yf.Ticker("GC=F")
+    gold_data = gold.history(period="1y")
+    gold_data.index = gold_data.index.tz_localize(None)
+    return gold_data['Close']
+
+# Get data
+btc_data = get_btc_data()
 usdc_mcap = get_usdc_data()
+fear_greed = get_fear_greed_index()
+nasdaq_data = get_nasdaq_data()
+gold_data = get_gold_data()
 
-# 检查是否成功获取了数据
-if btc_price.empty or usdc_mcap.empty:
-    st.error("无法获取数据。请检查您的网络连接或稍后再试。")
+# Merge data
+df = pd.concat([btc_data, usdc_mcap, fear_greed, nasdaq_data, gold_data], axis=1).dropna()
+df.columns = ['BTC Price', 'MA30', 'MA90', 'RSI', 'USDC Market Cap', 'Fear & Greed Index', 'NASDAQ-100', 'Gold Price']
+
+# Check if data was successfully retrieved
+if df.empty:
+    st.error("Unable to retrieve data. Please check your network connection or try again later.")
     st.stop()
 
-# 确保两个序列的索引都是 tz-naive 的
-btc_price.index = btc_price.index.tz_localize(None)
-usdc_mcap.index = usdc_mcap.index.tz_localize(None)
+# Ensure all index are tz-naive
+df.index = df.index.tz_localize(None)
 
-# 合并数据
-df = pd.concat([btc_price, usdc_mcap], axis=1).dropna()
-df.columns = ['BTC Price', 'USDC Market Cap']
-
-# 检查合并后的数据是否有缺失值
+# Check for missing values in the merged data
 if df.isnull().any().any():
-    st.warning("合并后的数据包含缺失值，请检查数据源。")
+    st.warning("The merged data contains missing values. Please check the data sources.")
     st.stop()
 
-# 计算相关性
-correlation = df['BTC Price'].corr(df['USDC Market Cap'])
+# Calculate new correlation
+correlation_matrix = df.corr()
 
-# 显示相关性
-st.write(f"BTC价格和USDC市值的皮尔逊相关系数: {correlation:.2f}")
+# Display correlation matrix
+st.write("Correlation Matrix:")
+st.dataframe(correlation_matrix)
 
-# 创建动态图表
-fig = go.Figure()
+# Add indicator selector
+st.sidebar.header("Select Indicators to Display")
+show_ma30 = st.sidebar.checkbox("Show MA30", value=True)
+show_ma90 = st.sidebar.checkbox("Show MA90", value=True)
+show_usdc = st.sidebar.checkbox("Show USDC Market Cap", value=True)
+show_nasdaq = st.sidebar.checkbox("Show NASDAQ-100", value=True)
+show_gold = st.sidebar.checkbox("Show Gold Price", value=True)
+show_rsi = st.sidebar.checkbox("Show RSI", value=True)
+show_fear_greed = st.sidebar.checkbox("Show Fear & Greed Index", value=True)
 
-# 添加 BTC 价格线图
-fig.add_trace(go.Scatter(x=df.index, y=df['BTC Price'], mode='lines', name='BTC Price', yaxis='y1'))
+# Create 5 independent charts
+def create_figure(title):
+    return go.Figure(layout=go.Layout(title=title, xaxis_title="Date", yaxis_title="Value"))
 
-# 添加 USDC 市值线图
-fig.add_trace(go.Scatter(x=df.index, y=df['USDC Market Cap'], mode='lines', name='USDC Market Cap', yaxis='y2'))
+# Helper function to create hover template
+def create_hover_template(df, columns):
+    hover_template = "<br>".join([
+        "Date: %{x|%Y-%m-%d}",
+        *[f"{col}: %{{customdata[{i}]:,.2f}}" for i, col in enumerate(columns)]
+    ])
+    return hover_template, df[columns].values
 
-# 设置图表布局
-fig.update_layout(
-    title='BTC Price and USDC Market Cap Over Time (Last Year)',
-    xaxis=dict(title='Date'),
-    yaxis=dict(title='BTC Price (USD)', side='left'),
-    yaxis2=dict(title='USDC Market Cap (USD)', side='right', overlaying='y'),
-    legend=dict(x=0, y=1),
-    hovermode='x unified'
+# 1. BTC Price and Moving Averages
+fig1 = create_figure("BTC Price and Moving Averages")
+hover_cols = ['BTC Price']
+if show_ma30:
+    hover_cols.append('MA30')
+if show_ma90:
+    hover_cols.append('MA90')
+hover_template, customdata = create_hover_template(df, hover_cols)
+
+fig1.add_trace(go.Scatter(x=df.index, y=df['BTC Price'], mode='lines', name='BTC Price',
+                          hovertemplate=hover_template, customdata=customdata))
+if show_ma30:
+    fig1.add_trace(go.Scatter(x=df.index, y=df['MA30'], mode='lines', name='MA30', line=dict(dash='dash'),
+                              hovertemplate=hover_template, customdata=customdata))
+if show_ma90:
+    fig1.add_trace(go.Scatter(x=df.index, y=df['MA90'], mode='lines', name='MA90', line=dict(dash='dot'),
+                              hovertemplate=hover_template, customdata=customdata))
+
+# 2. BTC Price and USDC Market Cap
+fig2 = create_figure("BTC Price and USDC Market Cap")
+hover_cols = ['BTC Price', 'USDC Market Cap'] if show_usdc else ['BTC Price']
+hover_template, customdata = create_hover_template(df, hover_cols)
+
+fig2.add_trace(go.Scatter(x=df.index, y=df['BTC Price'], mode='lines', name='BTC Price',
+                          hovertemplate=hover_template, customdata=customdata))
+if show_usdc:
+    fig2.add_trace(go.Scatter(x=df.index, y=df['USDC Market Cap'], mode='lines', name='USDC Market Cap', yaxis='y2',
+                              hovertemplate=hover_template, customdata=customdata))
+    fig2.update_layout(yaxis2=dict(title="USDC Market Cap", overlaying="y", side="right"))
+
+# 3. BTC Price, RSI and Fear & Greed Index
+fig3 = create_figure("BTC Price, RSI and Fear & Greed Index")
+fig3.update_layout(height=600)
+
+hover_cols = ['BTC Price']
+if show_rsi:
+    hover_cols.append('RSI')
+if show_fear_greed:
+    hover_cols.append('Fear & Greed Index')
+hover_template, customdata = create_hover_template(df, hover_cols)
+
+fig3.add_trace(go.Scatter(x=df.index, y=df['BTC Price'], mode='lines', name='BTC Price',
+                          hovertemplate=hover_template, customdata=customdata))
+
+if show_rsi:
+    fig3.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI', yaxis='y2', line=dict(color='blue'),
+                              hovertemplate=hover_template, customdata=customdata))
+    fig3.add_hrect(y0=70, y1=100, line_width=0, fillcolor="red", opacity=0.3, yref='y2')
+    fig3.add_hrect(y0=0, y1=30, line_width=0, fillcolor="green", opacity=0.3, yref='y2')
+    fig3.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.7, yref='y2')
+    fig3.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.7, yref='y2')
+    fig3.add_annotation(x=df.index[-1], y=70, text="Overbought (RSI > 70)", showarrow=False, yref='y2', xref='x',
+                        xanchor='right', yanchor='bottom', font=dict(color="white", size=10),
+                        bgcolor="rgba(255,0,0,0.7)", bordercolor="rgba(255,0,0,0.7)", borderwidth=1, borderpad=4)
+    fig3.add_annotation(x=df.index[-1], y=30, text="Oversold (RSI < 30)", showarrow=False, yref='y2', xref='x',
+                        xanchor='right', yanchor='top', font=dict(color="white", size=10),
+                        bgcolor="rgba(0,128,0,0.7)", bordercolor="rgba(0,128,0,0.7)", borderwidth=1, borderpad=4)
+
+if show_fear_greed:
+    fig3.add_trace(go.Scatter(x=df.index, y=df['Fear & Greed Index'], mode='lines', name='Fear & Greed Index', yaxis='y2', line=dict(color='red'),
+                              hovertemplate=hover_template, customdata=customdata))
+    fig3.add_hrect(y0=0, y1=25, line_width=0, fillcolor="red", opacity=0.1, yref='y2')
+    fig3.add_hrect(y0=25, y1=45, line_width=0, fillcolor="orange", opacity=0.1, yref='y2')
+    fig3.add_hrect(y0=45, y1=55, line_width=0, fillcolor="yellow", opacity=0.1, yref='y2')
+    fig3.add_hrect(y0=55, y1=75, line_width=0, fillcolor="lime", opacity=0.1, yref='y2')
+    fig3.add_hrect(y0=75, y1=100, line_width=0, fillcolor="green", opacity=0.1, yref='y2')
+    fig3.add_annotation(x=df.index[-1], y=12.5, text="Extreme Fear (0-24)", showarrow=False, yref='y2', xref='x', xanchor='right', yanchor='middle', font=dict(color="red", size=10))
+    fig3.add_annotation(x=df.index[-1], y=35, text="Fear (25-44)", showarrow=False, yref='y2', xref='x', xanchor='right', yanchor='middle', font=dict(color="red", size=10))
+    fig3.add_annotation(x=df.index[-1], y=50, text="Neutral (45-55)", showarrow=False, yref='y2', xref='x', xanchor='right', yanchor='middle', font=dict(color="red", size=10))
+    fig3.add_annotation(x=df.index[-1], y=65, text="Greed (56-75)", showarrow=False, yref='y2', xref='x', xanchor='right', yanchor='middle', font=dict(color="red", size=10))
+    fig3.add_annotation(x=df.index[-1], y=87.5, text="Extreme Greed (76-100)", showarrow=False, yref='y2', xref='x', xanchor='right', yanchor='middle', font=dict(color="red", size=10))
+
+fig3.update_layout(
+    yaxis=dict(title="BTC Price"),
+    yaxis2=dict(title="RSI / FGI", overlaying="y", side="right", range=[0, 100]),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    margin=dict(t=60, b=50, l=50, r=50)
 )
 
-# 显示动态图表
-st.plotly_chart(fig, use_container_width=True)
+# 4. NASDAQ-100
+fig4 = create_figure("NASDAQ-100")
+hover_cols = ['BTC Price', 'NASDAQ-100'] if show_nasdaq else ['BTC Price']
+hover_template, customdata = create_hover_template(df, hover_cols)
 
-# 创建散点图
-scatter_fig = go.Figure()
+fig4.add_trace(go.Scatter(x=df.index, y=df['BTC Price'], mode='lines', name='BTC Price',
+                          hovertemplate=hover_template, customdata=customdata))
+if show_nasdaq:
+    fig4.add_trace(go.Scatter(x=df.index, y=df['NASDAQ-100'], mode='lines', name='NASDAQ-100', yaxis='y2',
+                              hovertemplate=hover_template, customdata=customdata))
+    fig4.update_layout(yaxis2=dict(title="NASDAQ-100", overlaying="y", side="right"))
 
-scatter_fig.add_trace(go.Scatter(x=df['BTC Price'], y=df['USDC Market Cap'], mode='markers', name='BTC Price vs USDC Market Cap'))
+# 5. Gold Price
+fig5 = create_figure("Gold Price")
+hover_cols = ['BTC Price', 'Gold Price'] if show_gold else ['BTC Price']
+hover_template, customdata = create_hover_template(df, hover_cols)
 
-scatter_fig.update_layout(
-    title='BTC Price vs USDC Market Cap (Last Year)',
-    xaxis=dict(title='BTC Price (USD)'),
-    yaxis=dict(title='USDC Market Cap (USD)'),
-    hovermode='closest'
-)
+fig5.add_trace(go.Scatter(x=df.index, y=df['BTC Price'], mode='lines', name='BTC Price',
+                          hovertemplate=hover_template, customdata=customdata))
+if show_gold:
+    fig5.add_trace(go.Scatter(x=df.index, y=df['Gold Price'], mode='lines', name='Gold Price', yaxis='y2',
+                              hovertemplate=hover_template, customdata=customdata))
+    fig5.update_layout(yaxis2=dict(title="Gold Price", overlaying="y", side="right"))
 
-# 显示散点图
-st.plotly_chart(scatter_fig, use_container_width=True)
+# Add range selector for each chart
+def add_range_selector(fig):
+    fig.update_layout(
+        xaxis=dict(
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=1, label="1m", step="month", stepmode="backward"),
+                    dict(count=6, label="6m", step="month", stepmode="backward"),
+                    dict(step="all")
+                ])
+            ),
+            rangeslider=dict(visible=True),
+            type="date"
+        )
+    )
 
-# 显示原始数据
-st.write("原始数据:")
+for fig in [fig1, fig2, fig3, fig4, fig5]:
+    add_range_selector(fig)
+
+# Display charts
+st.plotly_chart(fig1, use_container_width=True)
+st.plotly_chart(fig2, use_container_width=True)
+st.plotly_chart(fig3, use_container_width=True)
+st.plotly_chart(fig4, use_container_width=True)
+st.plotly_chart(fig5, use_container_width=True)
+
+# Display raw data
+st.write("Raw Data:")
 st.dataframe(df)
 
-# 显示数据信息
-st.write("BTC Price 数据:")
-st.write(btc_price.head())
-st.write("USDC Market Cap 数据:")
-st.write(usdc_mcap.head())
+# Display data information
+st.write("BTC Price (last few days):")
+st.write(df['BTC Price'].tail())
+st.write("USDC Market Cap (last few days):")
+st.write(df['USDC Market Cap'].tail())
 
-# 添加下载按钮
+# Add download button
 @st.cache_data
 def convert_df(df):
     return df.to_csv(index=True).encode('utf-8')
 
 csv = convert_df(df)
 st.download_button(
-    label="下载数据为 CSV",
+    label="Download data as CSV",
     data=csv,
     file_name='btc_usdc_data.csv',
     mime='text/csv',
