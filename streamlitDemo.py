@@ -6,6 +6,9 @@ import yfinance as yf
 import requests
 from datetime import datetime, timedelta
 from plotly.subplots import make_subplots
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
 
 # Set page title
 st.set_page_config(page_title="BTC Correlation Analysis", layout="wide")
@@ -78,6 +81,49 @@ def get_gold_data():
     gold_data = gold.history(period="1y")
     gold_data.index = gold_data.index.tz_localize(None)
     return gold_data['Close']
+
+# Function: Load LSTM model
+@st.cache_resource
+def load_lstm_model(input_shape):
+    model = Sequential()
+    model.add(LSTM(units=50, return_sequences=True, input_shape=input_shape))
+    model.add(LSTM(units=50))
+    model.add(Dense(units=1))
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    st.write(f"Model input shape: {input_shape}")
+    return model
+
+# Function: Prepare data for LSTM
+@st.cache_data
+def prepare_data_for_lstm(data, sequence_length=60):
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(data.reshape(-1, 1))
+    
+    X, y = [], []
+    for i in range(sequence_length, len(scaled_data)):
+        X.append(scaled_data[i-sequence_length:i, 0])
+        y.append(scaled_data[i, 0])
+    
+    X, y = np.array(X), np.array(y)
+    X = X.reshape(X.shape[0], X.shape[1], 1)
+    
+    st.write(f"X shape: {X.shape}, y shape: {y.shape}")
+    return X, y, scaler
+
+# Function: Predict future prices using LSTM
+@st.cache_data
+def predict_future_prices(model, last_sequence, _scaler, days=7):
+    st.write(f"Last sequence shape: {last_sequence.shape}")
+    predicted_prices = []
+    current_sequence = last_sequence.copy()
+
+    for _ in range(days):
+        predicted_price = model.predict(current_sequence)
+        predicted_prices.append(predicted_price[0, 0])
+        current_sequence = np.append(current_sequence[:, 1:, :], predicted_price.reshape((1, 1, 1)), axis=1)
+
+    predicted_prices = _scaler.inverse_transform(np.array(predicted_prices).reshape(-1, 1))
+    return predicted_prices
 
 # Get data
 btc_data = get_btc_data()
@@ -283,3 +329,36 @@ st.download_button(
     file_name='btc_usdc_data.csv',
     mime='text/csv',
 )
+
+# LSTM Price Prediction
+st.header("LSTM Price Prediction")
+
+# Prepare data for LSTM
+sequence_length = 60
+X, y, scaler = prepare_data_for_lstm(df['BTC Price'].values, sequence_length)
+
+# Load and train the LSTM model
+lstm_model = load_lstm_model((sequence_length, 1))
+lstm_model.fit(X, y, epochs=25, batch_size=32, verbose=0)
+
+# Make predictions
+future_days = 7
+last_sequence = df['BTC Price'].values[-sequence_length:]
+st.write(f"Original last sequence shape: {last_sequence.shape}")
+last_sequence = scaler.transform(last_sequence.reshape(-1, 1)).reshape(1, -1, 1)
+st.write(f"Transformed last sequence shape: {last_sequence.shape}")
+
+predicted_prices = predict_future_prices(lstm_model, last_sequence, _scaler=scaler, days=future_days)
+
+# Display predictions
+st.write(f"Predicted BTC prices for the next {future_days} days:")
+future_dates = [df.index[-1] + timedelta(days=i) for i in range(1, future_days + 1)]
+for date, price in zip(future_dates, predicted_prices):
+    st.write(f"Date: {date.strftime('%Y-%m-%d')}, Predicted Price: ${price[0]:.2f}")
+
+# Create a plot for the predictions
+fig_pred = go.Figure()
+fig_pred.add_trace(go.Scatter(x=df.index, y=df['BTC Price'], mode='lines', name='Historical Price'))
+fig_pred.add_trace(go.Scatter(x=future_dates, y=predicted_prices.flatten(), mode='lines+markers', name='Predicted Price'))
+fig_pred.update_layout(title="BTC Price Prediction", xaxis_title="Date", yaxis_title="Price")
+st.plotly_chart(fig_pred, use_container_width=True)
