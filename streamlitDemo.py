@@ -15,7 +15,7 @@ st.set_page_config(page_title="BTC Correlation Analysis", layout="wide")
 st.title("Bitcoin Price Correlation Analysis (Last Year)")
 
 # Function: Get Bitcoin price data
-# @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
 def get_btc_data():
     btc = yf.Ticker("BTC-USD")
     btc_data = btc.history(period="1y")
@@ -43,12 +43,12 @@ def calculate_rsi(data, window=14):
     return 100 - (100 / (1 + rs))
 
 # Function: Get USDC market cap data
-# @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
 def get_usdc_data():
     end_date = datetime.now()
     start_date = end_date - timedelta(days=365)
     url = f"https://api.coingecko.com/api/v3/coins/usd-coin/market_chart/range?vs_currency=usd&from={int(start_date.timestamp())}&to={int(end_date.timestamp())}"
-    st.write("USDC API URL:", url)  # Log the API URL
+    # st.write("USDC API URL:", url)  # Log the API URL
     try:
         response = requests.get(url)
         response.raise_for_status()
@@ -66,7 +66,7 @@ def get_usdc_data():
         return pd.Series(dtype=float)
 
 # Function: Get Fear & Greed Index data
-# @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
 def get_fear_greed_index():
     url = "https://api.alternative.me/fng/?limit=365&format=json"
     response = requests.get(url)
@@ -79,7 +79,7 @@ def get_fear_greed_index():
     return df['value']
 
 # Function: Get NASDAQ-100 Index data
-# @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
 def get_nasdaq_data():
     nasdaq = yf.Ticker("^NDX")
     nasdaq_data = nasdaq.history(period="1y")
@@ -88,7 +88,7 @@ def get_nasdaq_data():
     return nasdaq_data['Close']
 
 # Function: Get Gold price data
-# @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
 def get_gold_data():
     gold = yf.Ticker("GC=F")
     gold_data = gold.history(period="1y")
@@ -108,7 +108,7 @@ def load_lstm_model(input_shape):
     return model
 
 # Function: Prepare data for LSTM
-# @st.cache_data
+@st.cache_data
 def prepare_data_for_lstm(data, sequence_length=60):
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(data.reshape(-1, 1))
@@ -125,7 +125,7 @@ def prepare_data_for_lstm(data, sequence_length=60):
     return X, y, scaler
 
 # Function: Predict future prices using LSTM
-# @st.cache_data
+@st.cache_data
 def predict_future_prices(model, last_sequence, _scaler, days=7):
     st.write(f"Last sequence shape: {last_sequence.shape}")
     predicted_prices = []
@@ -165,7 +165,7 @@ df.columns = ['BTC Price', 'MA30', 'MA90', 'RSI', 'USDC Market Cap', 'Fear & Gre
 
 # Log the merged data
 st.write("Merged data (last few rows):", df.tail())  # Log the last few rows of merged data
-st.write("Merged data (first few rows):", df.head())  # Log the first few rows of merged data
+# st.write("Merged data (first few rows):", df.head())  # Log the first few rows of merged data
 
 # Check if data was successfully retrieved
 if df.empty:
@@ -349,7 +349,7 @@ st.write("USDC Market Cap (last few days):")
 st.write(df['USDC Market Cap'].tail())
 
 # Add download button
-# @st.cache_data
+@st.cache_data
 def convert_df(df):
     return df.to_csv(index=True).encode('utf-8')
 
