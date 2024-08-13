@@ -15,14 +15,23 @@ st.set_page_config(page_title="BTC Correlation Analysis", layout="wide")
 st.title("Bitcoin Price Correlation Analysis (Last Year)")
 
 # Function: Get Bitcoin price data
-@st.cache_data(ttl=3600)
+# @st.cache_data(ttl=3600)
 def get_btc_data():
     btc = yf.Ticker("BTC-USD")
     btc_data = btc.history(period="1y")
-    btc_data.index = btc_data.index.tz_localize(None)
+    st.write("BTC data fetched:", btc_data.tail())  # Log the last few rows of BTC data
+
+    # Ensure the index is a DatetimeIndex
+    if not isinstance(btc_data.index, pd.DatetimeIndex):
+        btc_data.index = pd.to_datetime(btc_data.index)
+
+    if btc_data.index.tz is not None:
+        btc_data.index = btc_data.index.tz_localize(None)
+
     btc_data['MA30'] = btc_data['Close'].rolling(window=30).mean()
     btc_data['MA90'] = btc_data['Close'].rolling(window=90).mean()
     btc_data['RSI'] = calculate_rsi(btc_data['Close'])
+    st.write("BTC data after processing:", btc_data.tail())  # Log the last few rows after processing
     return btc_data[['Close', 'MA30', 'MA90', 'RSI']]
 
 # Function: Calculate RSI
@@ -34,11 +43,12 @@ def calculate_rsi(data, window=14):
     return 100 - (100 / (1 + rs))
 
 # Function: Get USDC market cap data
-@st.cache_data(ttl=3600)
+# @st.cache_data(ttl=3600)
 def get_usdc_data():
     end_date = datetime.now()
     start_date = end_date - timedelta(days=365)
     url = f"https://api.coingecko.com/api/v3/coins/usd-coin/market_chart/range?vs_currency=usd&from={int(start_date.timestamp())}&to={int(end_date.timestamp())}"
+    st.write("USDC API URL:", url)  # Log the API URL
     try:
         response = requests.get(url)
         response.raise_for_status()
@@ -49,13 +59,14 @@ def get_usdc_data():
         df = pd.DataFrame(data['market_caps'], columns=['Date', 'Market Cap'])
         df['Date'] = pd.to_datetime(df['Date'], unit='ms')
         df.set_index('Date', inplace=True)
+        st.write("USDC data fetched:", df.tail())  # Log the last few rows of USDC data
         return df['Market Cap']
     except requests.RequestException as e:
         st.error(f"Error occurred while fetching USDC data: {e}")
         return pd.Series(dtype=float)
 
 # Function: Get Fear & Greed Index data
-@st.cache_data(ttl=3600)
+# @st.cache_data(ttl=3600)
 def get_fear_greed_index():
     url = "https://api.alternative.me/fng/?limit=365&format=json"
     response = requests.get(url)
@@ -64,22 +75,25 @@ def get_fear_greed_index():
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
     df.set_index('timestamp', inplace=True)
     df['value'] = df['value'].astype(float)
+    st.write("Fear & Greed Index data fetched:", df.head())  # Log the first few rows of Fear & Greed Index data
     return df['value']
 
 # Function: Get NASDAQ-100 Index data
-@st.cache_data(ttl=3600)
+# @st.cache_data(ttl=3600)
 def get_nasdaq_data():
     nasdaq = yf.Ticker("^NDX")
     nasdaq_data = nasdaq.history(period="1y")
     nasdaq_data.index = nasdaq_data.index.tz_localize(None)
+    st.write("NASDAQ data fetched:", nasdaq_data.tail())  # Log the last few rows of NASDAQ data
     return nasdaq_data['Close']
 
 # Function: Get Gold price data
-@st.cache_data(ttl=3600)
+# @st.cache_data(ttl=3600)
 def get_gold_data():
     gold = yf.Ticker("GC=F")
     gold_data = gold.history(period="1y")
     gold_data.index = gold_data.index.tz_localize(None)
+    st.write("Gold data fetched:", gold_data.tail())  # Log the last few rows of Gold data
     return gold_data['Close']
 
 # Function: Load LSTM model
@@ -94,24 +108,24 @@ def load_lstm_model(input_shape):
     return model
 
 # Function: Prepare data for LSTM
-@st.cache_data
+# @st.cache_data
 def prepare_data_for_lstm(data, sequence_length=60):
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(data.reshape(-1, 1))
-    
+
     X, y = [], []
     for i in range(sequence_length, len(scaled_data)):
         X.append(scaled_data[i-sequence_length:i, 0])
         y.append(scaled_data[i, 0])
-    
+
     X, y = np.array(X), np.array(y)
     X = X.reshape(X.shape[0], X.shape[1], 1)
-    
+
     st.write(f"X shape: {X.shape}, y shape: {y.shape}")
     return X, y, scaler
 
 # Function: Predict future prices using LSTM
-@st.cache_data
+# @st.cache_data
 def predict_future_prices(model, last_sequence, _scaler, days=7):
     st.write(f"Last sequence shape: {last_sequence.shape}")
     predicted_prices = []
@@ -125,6 +139,12 @@ def predict_future_prices(model, last_sequence, _scaler, days=7):
     predicted_prices = _scaler.inverse_transform(np.array(predicted_prices).reshape(-1, 1))
     return predicted_prices
 
+# Function to fill missing dates for any data source
+def fill_missing_dates(df):
+    all_dates = pd.date_range(start=df.index.min(), end=datetime.now(), freq='D')
+    df = df.reindex(all_dates, method='ffill')
+    return df
+
 # Get data
 btc_data = get_btc_data()
 usdc_mcap = get_usdc_data()
@@ -132,9 +152,20 @@ fear_greed = get_fear_greed_index()
 nasdaq_data = get_nasdaq_data()
 gold_data = get_gold_data()
 
+# Fill missing dates for all data sources
+btc_data = fill_missing_dates(btc_data)
+usdc_mcap = fill_missing_dates(usdc_mcap)
+fear_greed = fill_missing_dates(fear_greed)
+nasdaq_data = fill_missing_dates(nasdaq_data)
+gold_data = fill_missing_dates(gold_data)
+
 # Merge data
 df = pd.concat([btc_data, usdc_mcap, fear_greed, nasdaq_data, gold_data], axis=1).dropna()
 df.columns = ['BTC Price', 'MA30', 'MA90', 'RSI', 'USDC Market Cap', 'Fear & Greed Index', 'NASDAQ-100', 'Gold Price']
+
+# Log the merged data
+st.write("Merged data (last few rows):", df.tail())  # Log the last few rows of merged data
+st.write("Merged data (first few rows):", df.head())  # Log the first few rows of merged data
 
 # Check if data was successfully retrieved
 if df.empty:
@@ -318,7 +349,7 @@ st.write("USDC Market Cap (last few days):")
 st.write(df['USDC Market Cap'].tail())
 
 # Add download button
-@st.cache_data
+# @st.cache_data
 def convert_df(df):
     return df.to_csv(index=True).encode('utf-8')
 
